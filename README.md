@@ -16,13 +16,13 @@ Requires Python 3.10+, `masonite-framework` 5.x and `masonite-framework-orm` 3.1
 From Git:
 
 ```bash
-pip install "masonite-orm-patches @ git+https://github.com/<your-org>/masonite-orm-patches.git@v0.1.0"
+pip install "masonite-orm-patches @ git+https://github.com/johnwilson/masonite-orm-patches.git@v0.1.0"
 ```
 
 In `requirements.txt`:
 
 ```text
-masonite-orm-patches @ git+https://github.com/<your-org>/masonite-orm-patches.git@v0.1.0
+masonite-orm-patches @ git+https://github.com/johnwilson/masonite-orm-patches.git@v0.1.0
 ```
 
 From a private index:
