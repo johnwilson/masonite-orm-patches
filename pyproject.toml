@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "masonite-orm-patches"
+dynamic = ["version"]
+description = "Masonite service provider that patches known Masonite ORM bugs at runtime"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["masonite", "masoniteorm", "orm", "patch"]
+classifiers = [
+    "Framework :: Masonite",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "masonite-framework>=5,<6",
+    "masonite-framework-orm>=3.1,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.hatch.version]
+path = "src/masonite_orm_patches/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/masonite_orm_patches"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
