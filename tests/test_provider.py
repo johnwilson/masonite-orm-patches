@@ -67,3 +67,50 @@ def test_remove_patches_restores_upstream(application):
 
     assert Model.__dict__["is_dirty"] is original_is_dirty
     assert "map_related" not in BelongsToMany.__dict__
+
+
+@pytest.fixture
+def hardening_settings():
+    from masonite_orm_patches import unpatch_base_connection
+    from masonite_orm_patches.patches import database_hardening
+
+    yield database_hardening._settings
+    unpatch_base_connection()
+
+
+def test_hardening_provider_patches_drivers_and_logs_once(
+    application, hardening_settings, monkeypatch
+):
+    from masoniteorm.connections import MySQLConnection, PostgresConnection
+
+    from masonite_orm_patches.providers import DatabaseHardeningProvider
+
+    monkeypatch.delenv("DB_MAX_IDLE_SECONDS", raising=False)
+    logger = RecordingLogger()
+    application.bind("logger", logger)
+
+    application.add_providers(DatabaseHardeningProvider)
+    application.add_providers(DatabaseHardeningProvider)
+
+    for driver in (MySQLConnection, PostgresConnection):
+        for name in ("query", "begin", "commit", "rollback"):
+            assert hasattr(driver.__dict__[name], "__original__")
+    assert hardening_settings["max_idle_seconds"] == 300
+    assert len(logger.messages) == 1
+    assert logger.messages[0].startswith(
+        "masonite-orm-patches: hardened MySQLConnection.query"
+    )
+
+
+@pytest.mark.parametrize(
+    "value, expected", [("60", 60.0), ("0", None), (" ", 300), ("soon", 300)]
+)
+def test_hardening_provider_reads_idle_limit_from_env(
+    application, hardening_settings, monkeypatch, value, expected
+):
+    from masonite_orm_patches.providers import DatabaseHardeningProvider
+
+    monkeypatch.setenv("DB_MAX_IDLE_SECONDS", value)
+    application.add_providers(DatabaseHardeningProvider)
+
+    assert hardening_settings["max_idle_seconds"] == expected

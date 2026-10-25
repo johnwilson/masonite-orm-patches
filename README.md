@@ -156,6 +156,93 @@ To-one relationships (`HasOne`, `BelongsTo`, `HasOneThrough`, `MorphOne`,
 `MorphTo`, `MorphToMany`) still resolve to `None` when there is no row, because
 `None` is the correct empty value for a single related model.
 
+## Connection hardening for workers
+
+`DatabaseHardeningProvider` is opt-in. It makes MySQL and PostgreSQL
+connections hold up in long-running processes such as queue workers, Celery or
+RQ, and daemons:
+
+```python
+# config/providers.py
+from masonite_orm_patches.providers import DatabaseHardeningProvider, OrmPatchProvider
+
+PROVIDERS = [
+    # ...
+    ORMProvider,
+    LoggingProvider,
+    AppProvider,
+    OrmPatchProvider,
+    DatabaseHardeningProvider,
+]
+```
+
+Outside Masonite, call `patch_base_connection(max_idle_seconds=300)` once at
+startup. Calling it again only changes the idle limit.
+
+The upstream driver classes keep `query`, `begin`, `commit` and `rollback` on
+`MySQLConnection` and `PostgresConnection`, not on `BaseConnection`, and they
+count nesting in `transaction_level`. Those are the methods and the counter the
+provider patches. It also patches `ConnectionResolver.rollback`.
+
+| Situation | Behaviour |
+| --- | --- |
+| The process forked, so the socket belongs to the parent | The inherited socket is released without sending the server a quit message, which would end the parent's session. The child then reconnects. A fork hook also empties the module-level connection pools in the child. Mid-transaction, this raises `TransactionAbortedError`. |
+| The connection sat idle longer than `max_idle_seconds` (default 300) | It is closed and replaced before the next query. Expired pooled connections are closed too. This never happens mid-transaction. |
+| The connection dropped outside a transaction | Every pooled connection for that driver is discarded, the ORM reconnects, and the query is retried once. |
+| The connection dropped mid-transaction | Raises `TransactionAbortedError`, which is a `QueryException`. The transaction level is reset to 0, the connection is removed from the resolver, and nothing is retried. |
+| The connection dropped during `COMMIT` | Raises `CommitOutcomeUnknownError`. The commit may have landed, so this is deliberately not a `TransactionAbortedError`. |
+| `rollback()` runs on a dead connection | Logs a warning and cleans up state instead of raising. `DB.rollback()` after an abort is a no-op instead of raising `KeyError`. |
+
+Configuration:
+
+- `DB_MAX_IDLE_SECONDS` sets the idle limit in seconds. `0` disables recycling.
+- `"max_idle_seconds"` on a connection in `DATABASES` overrides the limit for
+  that connection.
+
+Set the limit below the server's `wait_timeout` (MySQL) and below any
+load-balancer or firewall idle timeout.
+
+### Retrying transaction blocks
+
+The server has already rolled back an aborted transaction, so retry the whole
+block, never the single statement. `run_in_transaction` does this with jittered
+exponential backoff:
+
+```python
+from masonite_orm_patches import CommitOutcomeUnknownError, run_in_transaction
+
+def charge_invoice(invoice_id):
+    def work():
+        invoice = Invoice.find(invoice_id)
+        invoice.update({"status": "paid"})
+        Payment.create({"invoice_id": invoice_id, "amount": invoice.total})
+        return invoice
+
+    try:
+        return run_in_transaction(work, connection="mysql", attempts=3)
+    except CommitOutcomeUnknownError:
+        # The commit may have landed: check before doing it again.
+        if not Payment.where("invoice_id", invoice_id).exists():
+            raise
+```
+
+`work` runs again from the start on each attempt, so keep side effects outside
+the database (emails, HTTP calls) out of it and run them after it returns.
+
+### Caveats
+
+- A standalone `INSERT` or `UPDATE` that drops after the server ran it but
+  before the reply arrived is retried and applied twice. Wrap writes that must
+  not repeat in `run_in_transaction`; inside a transaction nothing is retried.
+- Each upstream driver shares one connection pool across all of its connection
+  names, so a disconnect on one MySQL connection discards the pooled
+  connections of every MySQL connection.
+- psycopg2's `begin()` doesn't contact the server. On PostgreSQL, a link that
+  died within the idle limit is therefore only noticed on the transaction's
+  first query, which raises `TransactionAbortedError`. On MySQL the `BEGIN`
+  itself is retried.
+- SQLite and SQL Server connections are not patched.
+
 ## Development
 
 ```bash
@@ -171,7 +258,11 @@ The tests cover the following:
   relation loads in one query.
 - `test_empty_relations.py`: empty to-many relations become collections, and
   to-one relations stay `None`.
-- `test_provider.py`: registers the provider on a real Masonite `Application`.
+- `test_provider.py`: registers both providers on a real Masonite `Application`.
+- `test_database_hardening.py`: runs the upstream MySQL and Postgres drivers
+  against fake pymysql and psycopg2 modules. It covers fork detection,
+  including a real `os.fork()`, idle recycling, disconnect retries,
+  transaction aborts, rollbacks on dead connections and `run_in_transaction`.
 
 ## Removing the package
 
