@@ -7,6 +7,7 @@ from masoniteorm.relationships.BelongsToMany import BelongsToMany
 from .belongs_to_many import patched_map_related, patched_register_related
 from .empty_relations import patched_register_relationships_to_model
 from .is_dirty import patched_is_dirty
+from .sql_injection import patched_group_by, patched_order_by
 
 # (class, method name, replacement)
 PATCHES = [
@@ -18,6 +19,8 @@ PATCHES = [
         "_register_relationships_to_model",
         patched_register_relationships_to_model,
     ),
+    (QueryBuilder, "order_by", patched_order_by),
+    (QueryBuilder, "group_by", patched_group_by),
 ]
 
 # Marker set on every function we install, so repeated calls are no-ops.
@@ -72,4 +75,6 @@ __all__ = [
     "patched_map_related",
     "patched_register_related",
     "patched_register_relationships_to_model",
+    "patched_order_by",
+    "patched_group_by",
 ]

@@ -49,7 +49,8 @@ def test_logs_through_masonite_logger_once(application):
     assert logger.messages == [
         "masonite-orm-patches: patched Model.is_dirty, "
         "BelongsToMany.map_related, BelongsToMany.register_related, "
-        "QueryBuilder._register_relationships_to_model"
+        "QueryBuilder._register_relationships_to_model, "
+        "QueryBuilder.order_by, QueryBuilder.group_by"
     ]
 
 
