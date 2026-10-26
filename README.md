@@ -1,12 +1,13 @@
 # masonite-orm-patches
 
-A Masonite 5 service provider that fixes two Masonite ORM 3.x bugs at runtime,
-so you don't need to fork the ORM or edit vendored files.
+A Masonite 5 service provider that fixes several Masonite ORM 3.x bugs at
+runtime, so you don't need to fork the ORM or edit vendored files.
 
 | Upstream issue | Symptom | Patched method(s) |
 | --- | --- | --- |
 | [masonitedev/orm#12](https://github.com/masonitedev/orm/issues/12) | `Post.with_("tags").get()` raises `NotImplementedError: BelongsToMany relationship does not implement the 'related_result' method` | `BelongsToMany.map_related`, `BelongsToMany.register_related` |
 | [masonitedev/orm#17](https://github.com/masonitedev/orm/issues/17) | `is_dirty()` returns `True` after assigning a value equal to the original, and `False` after `fill()` with a changed value | `Model.is_dirty` |
+| [masonitedev/orm#26](https://github.com/masonitedev/orm/issues/26) | `order_by()` / `group_by()` compile a caller-supplied column or sort direction as an unescaped identifier, allowing SQL injection when the value comes from untrusted input | `QueryBuilder.order_by`, `QueryBuilder.group_by` |
 | — | `User.with_("roles").first().roles` is `None` instead of an empty collection when the user has no roles | `QueryBuilder._register_relationships_to_model` |
 
 Requires Python 3.10+, `masonite-framework` 5.x and `masonite-framework-orm` 3.1+.
@@ -60,7 +61,7 @@ the provider is registered before `LoggingProvider`, the line goes to the
 standard `masonite_orm_patches` logger instead.
 
 ```text
-masonite-orm-patches: patched Model.is_dirty, BelongsToMany.map_related, BelongsToMany.register_related, QueryBuilder._register_relationships_to_model
+masonite-orm-patches: patched Model.is_dirty, BelongsToMany.map_related, BelongsToMany.register_related, QueryBuilder._register_relationships_to_model, QueryBuilder.order_by, QueryBuilder.group_by
 ```
 
 Applying the patches more than once has no effect.
@@ -131,6 +132,33 @@ example `with_({"roles": lambda q: q.where(...)})`.
 users = User.with_("roles").get()   # 2 queries: users, then roles + pivot
 for user in users:
     user.roles                       # Collection, no extra query
+```
+
+### `order_by` / `group_by` SQL injection
+
+`order_by(column, direction)` and `group_by(column)` compile their arguments as
+SQL *identifiers*, which cannot be parameterised. Upstream only wraps the name in
+the grammar's quote character and never escapes that character inside the name,
+nor does it restrict `direction` (interpolated verbatim after the column). A
+column or direction taken from untrusted input — a common pattern is sorting
+straight from a request query string — can therefore break out of the quoting
+and inject arbitrary SQL.
+
+The patch validates both arguments against a strict allowlist before they reach
+the grammar:
+
+- Columns must be plain identifiers, optionally `table.column`, with an optional
+  trailing `asc`/`desc`. Comma-separated lists are still accepted.
+- Directions must be `ASC` or `DESC` (case-insensitive).
+
+Anything else raises `ValueError`. Every legitimate call compiles exactly as
+before; intentional raw expressions still go through `order_by_raw()` /
+`group_by_raw()`, which are left untouched.
+
+```python
+User.order_by(request.input("sort"))        # safe: rejects a crafted value
+User.order_by("created_at", "DESC")          # unchanged
+User.order_by_raw("FIELD(status, 'new')")    # raw escape hatch, as before
 ```
 
 ### Empty eager-loaded to-many relations
@@ -258,6 +286,9 @@ The tests cover the following:
   relation loads in one query.
 - `test_empty_relations.py`: empty to-many relations become collections, and
   to-one relations stay `None`.
+- `test_sql_injection.py`: legitimate `order_by` / `group_by` calls still
+  compile across all four grammars, while quote-breakout columns and
+  non-`ASC`/`DESC` directions raise `ValueError`.
 - `test_provider.py`: registers both providers on a real Masonite `Application`.
 - `test_database_hardening.py`: runs the upstream MySQL and Postgres drivers
   against fake pymysql and psycopg2 modules. It covers fork detection,
@@ -266,5 +297,5 @@ The tests cover the following:
 
 ## Removing the package
 
-Once upstream ships fixes for #12 and #17, remove `OrmPatchProvider` from
+Once upstream ships fixes for #12, #17 and #26, remove `OrmPatchProvider` from
 `config/providers.py` and uninstall the package.
